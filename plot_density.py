@@ -119,10 +119,11 @@ def main():
         plt.plot(bin_centers, density, linestyle='-', label=label)
     
     plt.xlabel("Distance to surface (Å)")
+    plt.xlim(left=0)
     plt.ylabel("Density (atoms/nm³)")
     plt.title(f"Density of element {args.target} vs Distance from {args.metal} Surface")
     plt.grid(True)
-    plt.legend()  # Add legend with file names.
+    plt.legend()
     plt.tight_layout()
     
     logging.info("Plotting data from all processed files.")
