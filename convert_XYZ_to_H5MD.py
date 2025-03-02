@@ -1,15 +1,17 @@
+import os
+import argparse
 import numpy as np
 import h5py
 
-def convert_xyz_to_h5md(xyz_file, h5md_file, timestep=2.5):
+def convert_xyz_to_h5md(xyz_file, h5md_file, timestep):
     """
     Convert an XYZ trajectory file to an H5MD file.
 
     Parameters:
         xyz_file (str): Path to the input XYZ file.
         h5md_file (str): Path to the output H5MD file.
-        timestep (float): Timestep between frames in femtoseconds (default 2.5 fs).
-
+        timestep (float): Timestep between frames in femtoseconds.
+    
     The function reads the XYZ file frame by frame, extracts the positions and atomic
     element symbols, computes the time for each frame, and writes the data to an H5MD file.
     """
@@ -77,5 +79,21 @@ def convert_xyz_to_h5md(xyz_file, h5md_file, timestep=2.5):
     print("Conversion complete. H5MD file saved as:", h5md_file)
 
 if __name__ == '__main__':
-    # Replace 'input.xyz' and 'output.h5md' with the appropriate file paths.
-    convert_xyz_to_h5md("Pt111_Cs1.xyz", "Pt111_Cs1.h5md")
+    # Set up the argument parser
+    parser = argparse.ArgumentParser(description="Convert XYZ trajectory files to H5MD format.")
+    parser.add_argument('-t', '--timestep', type=float, default=2.5,
+                        help="Timestep between frames in femtoseconds (default: 2.5)")
+    
+    args = parser.parse_args()
+    
+    # Process each .xyz file in the input directory "trajectories_xyz"
+    for filename in os.listdir("trajectories_xyz"):
+        if filename.endswith(".xyz"):
+            input_filepath = os.path.join("trajectories_xyz", filename)
+            if os.path.isfile(input_filepath):
+                base_name = os.path.splitext(filename)[0]
+                output_filename = base_name + ".h5md"
+                output_filepath = os.path.join("trajectories", output_filename)
+                
+                # Call the conversion function with the provided timestep argument
+                convert_xyz_to_h5md(input_filepath, output_filepath, args.timestep)
