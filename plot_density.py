@@ -1,127 +1,153 @@
 #!/usr/bin/env python3
 import argparse
-import glob
 import logging
-import h5py
 import numpy as np
 import matplotlib.pyplot as plt
-import os
+from read_h5md import read_h5md
+from scipy.spatial import cKDTree  # for water COM search (if needed)
 
-def parse_cell(cell_str):
-    """Parse a comma-separated string into a tuple of floats."""
-    try:
-        dims = tuple(float(val) for val in cell_str.split(","))
-        if len(dims) != 3:
-            raise ValueError("Cell dimensions must have three values: A,B,C")
-        return dims
-    except Exception as e:
-        raise argparse.ArgumentTypeError(f"Invalid cell format: {e}")
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-def process_file(filename, args):
-    """Process a single file and return bin_centers and density values for plotting."""
-    logging.info("Processing file: %s", filename)
-    with h5py.File(filename, "r") as f:
-        positions = f["atoms/position"][:]  # shape: (n_steps, n_atoms, 3)
-        step_times = f["step/step_time"][:]
-        elements = f["atoms/element"][:]
-        if isinstance(elements[0], bytes):
-            elements = np.array([el.decode("utf-8") for el in elements])
-    
-    n_steps = positions.shape[0]
-
-    # Skip steps based on given skip time in ps
-    skip_time_fs = args.skip * 1000
-    valid_mask = step_times >= skip_time_fs
-    if not np.any(valid_mask):
-        logging.error("No steps processed after skipping the first %.2f ps in %s", args.skip, filename)
-        return None, None
-    valid_positions = positions[valid_mask]  # shape: (n_valid, n_atoms, 3)
-
-    cell_A, cell_B, _ = args.cell
-    area_nm2 = (cell_A / 10) * (cell_B / 10)
-
-    # Create boolean masks for metal and target elements.
-    metal_mask = (elements == args.metal)
-    target_mask = (elements == args.target)
+def compute_surface_z(positions, elements, metal_type, lattice_dimensions):
+    """
+    Compute the surface z for each frame using vectorized operations.
+    For each frame, select the metal atoms (where element == metal_type),
+    then average the top n_top (n_total // electrode_layers) z values.
+    """
+    n_frames = positions.shape[0]
+    electrode_layers = lattice_dimensions[2] if lattice_dimensions is not None else 1
+    metal_mask = (elements == metal_type)
+    # If no metal atoms are present, use zero.
     if not np.any(metal_mask):
-        logging.error("No metal atoms (%s) found in %s.", args.metal, filename)
-        return None, None
-    if not np.any(target_mask):
-        logging.error("No target atoms (%s) found in %s.", args.target, filename)
-        return None, None
+        return np.zeros(n_frames)
+    metal_z = positions[:, metal_mask, 2]  # shape: (n_frames, n_metal)
+    surface_z = np.empty(n_frames)
+    for i in range(n_frames):
+        frame_metal = metal_z[i]
+        n_top = frame_metal.size // electrode_layers
+        if n_top < 1:
+            n_top = frame_metal.size
+        # Sort descending and average top n_top values.
+        top_vals = np.partition(frame_metal, -n_top)[-n_top:]
+        surface_z[i] = np.mean(top_vals)
+    return surface_z
 
-    # Get z-coordinates for metal and target atoms.
-    metal_z_all = valid_positions[:, metal_mask, 2]  # shape: (n_valid, n_metal)
-    n_metal = metal_z_all.shape[1]
-    top_n = int(np.ceil(n_metal / args.layers))
-    sorted_metal_z = np.sort(metal_z_all, axis=1)
-    top_metal_z = sorted_metal_z[:, -top_n:]
-    surface_z = np.mean(top_metal_z, axis=1)  # shape: (n_valid,)
-
-    target_z_all = valid_positions[:, target_mask, 2]  # shape: (n_valid, n_target)
-
-    # Instead of computing distances and letting np.histogram choose the bin range,
-    # we histogram the absolute target z coordinates using fixed bins that span the full simulation cell.
-    target_z_flat = target_z_all.flatten()
-    # Create fixed bin edges spanning the full z coordinate of the simulation cell (in Å)
-    bin_edges = np.linspace(0, args.cell[2], args.bins + 1)
-    counts_total, _ = np.histogram(target_z_flat, bins=bin_edges)
-
-    # To keep the "distance to surface" x-values, shift the bin centers by the average surface position.
-    avg_surface_z = np.mean(surface_z)
-    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:]) - avg_surface_z
-
-    # Compute average counts per valid step.
-    avg_counts = counts_total / valid_positions.shape[0]
-    # Convert bin widths from Å to nm.
-    bin_widths_nm = (bin_edges[1] - bin_edges[0]) / 10
-    density = avg_counts / (area_nm2 * bin_widths_nm)
-
-    
-    logging.info("Processed %d valid steps in %s", valid_positions.shape[0], filename)
-    return bin_centers, density
+def compute_water_coms(positions, elements, cutoff=1.2):
+    """
+    Compute water centers-of-mass for a single frame using a fast KD-tree.
+    This function is applied per frame.
+    Water molecules are assumed to consist of one 'O' and two nearest 'H' atoms within the cutoff.
+    Returns an array of COM positions.
+    """
+    # Separate oxygen and hydrogen indices.
+    O_idx = np.where(elements == 'O')[0]
+    H_idx = np.where(elements == 'H')[0]
+    if O_idx.size == 0 or H_idx.size == 0:
+        return np.empty((0,3))
+    pos_O = positions[O_idx]  # shape: (n_O, 3)
+    pos_H = positions[H_idx]  # shape: (n_H, 3)
+    tree = cKDTree(pos_H)
+    coms = []
+    mass_O, mass_H = 16.0, 1.0
+    for o, O_pos in zip(O_idx, pos_O):
+        # Query all H atoms within cutoff.
+        idxs = tree.query_ball_point(O_pos, cutoff)
+        if len(idxs) < 2:
+            continue
+        # Get the two closest H atoms.
+        H_candidates = pos_H[idxs]
+        distances = np.linalg.norm(H_candidates - O_pos, axis=1)
+        two_closest = H_candidates[np.argsort(distances)[:2]]
+        # Compute center-of-mass.
+        com = (mass_O * O_pos + mass_H * two_closest[0] + mass_H * two_closest[1]) / (mass_O + 2*mass_H)
+        coms.append(com)
+    if coms:
+        return np.array(coms)
+    else:
+        return np.empty((0,3))
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Calculate density (atoms/nm³) of a target element vs. distance to a metal surface from h5md trajectories."
+        description="Calculate density (atoms/nm³ or molecules/nm³) vs. distance from a metal surface using a vectorized approach."
     )
-    # Allow multiple files to be provided.
-    parser.add_argument("filename", nargs="+", help="Input h5md file(s) (wildcards allowed)")
-    parser.add_argument("-m", "--metal", default="Pt", help="Metal element symbol (default: Pt)")
-    parser.add_argument("-t", "--target", default="O", help="Target element symbol (default: O)")
-    parser.add_argument("-l", "--layers", type=int, default=4, help="Number of layers in the metal surface (default: 4)")
+    parser.add_argument("filenames", nargs="+", help="Input h5md file(s)")
     parser.add_argument("-s", "--skip", type=float, default=5, help="Skip first X ps (default: 5 ps)")
-    parser.add_argument("-b", "--bins", type=int, default=100, help="Number of bins for the histogram (default: 100)")
-    parser.add_argument("-c", "--cell", type=parse_cell, default="14.25,14.81,54.48",
-                        help="Cell dimensions A,B,C (default: 14.25,14.81,54.48)")
+    parser.add_argument("-b", "--bins", type=int, default=100, help="Number of histogram bins (default: 100)")
+    parser.add_argument("-t", "--target", type=str, default="O", help="Target element symbol (default: O). Use 'H2O' for water.")
     args = parser.parse_args()
 
-    logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
-    
-    # Expand wildcard patterns into actual file paths
-    file_list = []
-    for pattern in args.filename:
-        file_list.extend(glob.glob(pattern))
-
-    if not file_list:
-        logging.error("No files found matching the given pattern(s).")
-        return
-
     plt.figure()
-    # Iterate over each resolved file path and process it.
-    for file in file_list:
-        bin_centers, density = process_file(file, args)
-        if bin_centers is None or density is None:
-            logging.warning("Skipping file %s due to errors.", file)
+    for file_path in args.filenames:
+        sim = read_h5md(file_path)
+        positions = sim["positions"]    # shape: (n_frames, n_atoms, 3)
+        elements = sim["elements"]      # shape: (n_atoms,)
+        step_times = sim["step_times"]  # in fs
+        metal_type = sim["metal_type"]
+        lattice_dimensions = sim["lattice_dimensions"]
+        cell_dimensions = sim["cell_dimensions"]
+        project_name = sim["project_name"]
+        n_frames = positions.shape[0]
+
+        # Precompute surface_z for all frames.
+        surface_z_all = compute_surface_z(positions, elements, metal_type, lattice_dimensions)
+
+        # Define bin edges (in Å).
+        bin_edges = cell_dimensions[2] * np.linspace(0, 1, args.bins + 1)
+        bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+        distances_list = []
+        valid_count = 0
+
+        if args.target == "H2O":
+            # For each frame, compute water COMs with the KD-tree approach.
+            for i in range(n_frames):
+                if step_times[i] < args.skip * 1000:
+                    continue
+                valid_count += 1
+                frame_positions = positions[i]  # shape: (n_atoms, 3)
+                # Compute water center-of-mass for the frame.
+                water_coms = compute_water_coms(frame_positions, elements)
+                if water_coms.size:
+                    d = np.abs(water_coms[:, 2] - surface_z_all[i])
+                    distances_list.append(d)
+        else:
+            # Vectorized approach for a target element.
+            target_mask = (elements == args.target)
+            if not np.any(target_mask):
+                logging.warning("No atoms with target element '%s' in file %s", args.target, file_path)
+                continue
+            target_z = positions[:, target_mask, 2]  # shape: (n_frames, n_target)
+            for i in range(n_frames):
+                if step_times[i] < args.skip * 1000:
+                    continue
+                valid_count += 1
+                # Compute distances for all target atoms in frame i.
+                d = np.abs(target_z[i] - surface_z_all[i])
+                distances_list.append(d)
+                
+        if valid_count == 0:
+            logging.warning("No valid frames processed for file: %s", file_path)
             continue
-        # Remove extension for the legend.
-        label = os.path.splitext(os.path.basename(file))[0]
-        plt.plot(bin_centers, density, linestyle='-', label=label)
-    
+
+        # Concatenate distances from all frames.
+        all_distances = np.concatenate(distances_list)
+        counts, _ = np.histogram(all_distances, bins=bin_edges)
+
+        # Compute density: convert area from Å² to nm² and bin thickness from Å to nm.
+        area_nm2 = (cell_dimensions[0] * cell_dimensions[1]) / 100.0
+        bin_thickness_nm = (bin_edges[1] - bin_edges[0]) / 10.0
+        bin_volume_nm3 = area_nm2 * bin_thickness_nm
+        density = counts / (valid_count * bin_volume_nm3)
+
+        plt.plot(bin_centers, density, linestyle='-', label=project_name)
+
     plt.xlabel("Distance to surface (Å)")
     plt.xlim(left=0)
-    plt.ylabel("Density (atoms/nm³)")
-    plt.title(f"Density of element {args.target} vs Distance from {args.metal} Surface")
+    if args.target == "H2O":
+        plt.ylabel("Density of H2O (molecules/nm³)")
+    else:
+        plt.ylabel(f"Density of {args.target} (atoms/nm³)")
+    plt.title(f"Density of {args.target} vs Distance from {metal_type} Surface")
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
