@@ -40,8 +40,8 @@ def simple_analysis(positions):
     return np.mean(positions, axis=1)
 
 if __name__ == '__main__':
-    xyz_file = "Pt111_Cs1.xyz"
-    h5md_file = "Pt111_Cs1.h5md"
+    xyz_file = "trajectories_xyz/example.xyz"
+    h5md_file = "trajectories/example.h5md"
     
     # Timing the loading and analysis for XYZ file
     t0 = time.time()
