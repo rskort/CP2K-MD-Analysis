@@ -4,9 +4,7 @@ import logging
 import numpy as np
 import matplotlib.pyplot as plt
 from read_h5md import read_h5md
-from scipy.spatial import cKDTree  # for water COM search (if needed)
-
-logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
+from scipy.spatial import cKDTree
 
 def compute_surface_z(positions, elements, metal_type, lattice_dimensions):
     """
@@ -72,9 +70,23 @@ def main():
     )
     parser.add_argument("filenames", nargs="+", help="Input h5md file(s)")
     parser.add_argument("-s", "--skip", type=float, default=5, help="Skip first X ps (default: 5 ps)")
-    parser.add_argument("-b", "--bins", type=int, default=100, help="Number of histogram bins (default: 100)")
+    parser.add_argument("-b", "--bins", type=int, default=500, help="Number of histogram bins (default: 500)")
     parser.add_argument("-t", "--target", type=str, default="O", help="Target element symbol (default: O). Use 'H2O' for water.")
+    # If -i is given, the initial position of the target atom is plotted as a dot on the graph once.
+    parser.add_argument("-i", "--initial_position", action="store_true", help="Plot initial position of target atom")
+    # If -v is given, debug messages are shown.
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug messages")
     args = parser.parse_args()
+
+    # Set up logging.
+    # If -v is given, debug messages are shown. Otherwise, only info messages are shown.
+    if args.verbose:
+        logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.DEBUG)
+    else:
+        logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
+
+    # Color list to cycle through for plotting.
+    colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
     plt.figure()
     for file_path in args.filenames:
@@ -139,20 +151,41 @@ def main():
         bin_volume_nm3 = area_nm2 * bin_thickness_nm
         density = counts / (valid_count * bin_volume_nm3)
 
-        plt.plot(bin_centers, density, linestyle='-', label=project_name)
+        color = colors.pop(0)
+
+        plt.plot(bin_centers, density, linestyle='-', label=project_name, color=color)
+        plt.fill_between(bin_centers, density, color=color, alpha=0.2)
+
+        # Plot initial position in distance from surface in Å of each target atom if -i is given.
+        if args.initial_position:
+            if args.target == "H2O":
+                initial_positions = compute_water_coms(positions[0], elements)
+            else:
+                initial_positions = positions[0][elements == args.target]
+            initial_distances = np.abs(initial_positions[:, 2] - surface_z_all[0])
+            # Plot a big circle at each initial position. The circle is hollow. The y-coordinate is 0.
+            plt.scatter(initial_distances, np.zeros_like(initial_distances), color=color, s=50, marker='o', facecolors='none', linewidths=2)
+            
+            
+            
 
     plt.xlabel("Distance to surface (Å)")
-    plt.xlim(left=0)
     if args.target == "H2O":
         plt.ylabel("Density of H2O (molecules/nm³)")
     else:
         plt.ylabel(f"Density of {args.target} (atoms/nm³)")
+    
+    # Set x-axis limits
+    # Start at 0 Å
+    # End at the maximum distance from the surface in all processed files
+    plt.xlim(np.min([np.min(d) for d in distances_list]) - 1, np.max([np.max(d) for d in distances_list]) + 1)
+
     plt.title(f"Density of {args.target} vs Distance from {metal_type} Surface")
-    plt.grid(True)
+    plt.grid(True, axis='y')
     plt.legend()
     plt.tight_layout()
     
-    logging.info("Plotting data from all processed files.")
+    logging.debug("Plotting data from all processed files.")
     plt.show()
 
 if __name__ == "__main__":

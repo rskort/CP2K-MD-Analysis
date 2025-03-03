@@ -34,7 +34,7 @@ def read_h5md(file_path):
         step_times = step_grp["step_time"][()]  # shape: (n_frames,)
     
     project_name = os.path.splitext(os.path.basename(file_path))[0]
-    logging.info("Reader: %d frames with %d atoms per frame read from %s",
+    logging.debug("Reader: %d frames with %d atoms per frame read from %s",
                  positions.shape[0], positions.shape[1], file_path)
     return {
         "positions": positions,
