@@ -3,66 +3,8 @@ import argparse
 import logging
 import numpy as np
 import matplotlib.pyplot as plt
-from read_h5md import read_h5md
-from scipy.spatial import cKDTree
-
-def compute_surface_z(positions, elements, metal_type, lattice_dimensions):
-    """
-    Compute the surface z for each frame using vectorized operations.
-    For each frame, select the metal atoms (where element == metal_type),
-    then average the top n_top (n_total // electrode_layers) z values.
-    """
-    n_frames = positions.shape[0]
-    electrode_layers = lattice_dimensions[2] if lattice_dimensions is not None else 1
-    metal_mask = (elements == metal_type)
-    # If no metal atoms are present, use zero.
-    if not np.any(metal_mask):
-        return np.zeros(n_frames)
-    metal_z = positions[:, metal_mask, 2]  # shape: (n_frames, n_metal)
-    surface_z = np.empty(n_frames)
-    for i in range(n_frames):
-        frame_metal = metal_z[i]
-        n_top = frame_metal.size // electrode_layers
-        if n_top < 1:
-            n_top = frame_metal.size
-        # Sort descending and average top n_top values.
-        top_vals = np.partition(frame_metal, -n_top)[-n_top:]
-        surface_z[i] = np.mean(top_vals)
-    return surface_z
-
-def compute_water_coms(positions, elements, cutoff=1.2):
-    """
-    Compute water centers-of-mass for a single frame using a fast KD-tree.
-    This function is applied per frame.
-    Water molecules are assumed to consist of one 'O' and two nearest 'H' atoms within the cutoff.
-    Returns an array of COM positions.
-    """
-    # Separate oxygen and hydrogen indices.
-    O_idx = np.where(elements == 'O')[0]
-    H_idx = np.where(elements == 'H')[0]
-    if O_idx.size == 0 or H_idx.size == 0:
-        return np.empty((0,3))
-    pos_O = positions[O_idx]  # shape: (n_O, 3)
-    pos_H = positions[H_idx]  # shape: (n_H, 3)
-    tree = cKDTree(pos_H)
-    coms = []
-    mass_O, mass_H = 16.0, 1.0
-    for o, O_pos in zip(O_idx, pos_O):
-        # Query all H atoms within cutoff.
-        idxs = tree.query_ball_point(O_pos, cutoff)
-        if len(idxs) < 2:
-            continue
-        # Get the two closest H atoms.
-        H_candidates = pos_H[idxs]
-        distances = np.linalg.norm(H_candidates - O_pos, axis=1)
-        two_closest = H_candidates[np.argsort(distances)[:2]]
-        # Compute center-of-mass.
-        com = (mass_O * O_pos + mass_H * two_closest[0] + mass_H * two_closest[1]) / (mass_O + 2*mass_H)
-        coms.append(com)
-    if coms:
-        return np.array(coms)
-    else:
-        return np.empty((0,3))
+from read_h5md import Simulation
+from itertools import cycle
 
 def main():
     parser = argparse.ArgumentParser(
@@ -86,57 +28,45 @@ def main():
         logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
     # Color list to cycle through for plotting.
-    colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    colors = cycle(plt.rcParams['axes.prop_cycle'].by_key()['color'])
 
     plt.figure()
     for file_path in args.filenames:
-        sim = read_h5md(file_path)
-        positions = sim["positions"]    # shape: (n_frames, n_atoms, 3)
-        elements = sim["elements"]      # shape: (n_atoms,)
-        step_times = sim["step_times"]  # in fs
-        metal_type = sim["metal_type"]
-        lattice_dimensions = sim["lattice_dimensions"]
-        cell_dimensions = sim["cell_dimensions"]
-        project_name = sim["project_name"]
-        n_frames = positions.shape[0]
-
-        # Precompute surface_z for all frames.
-        surface_z_all = compute_surface_z(positions, elements, metal_type, lattice_dimensions)
-
+        data = Simulation(file_path)
+        
         # Define bin edges (in Å).
-        bin_edges = cell_dimensions[2] * np.linspace(0, 1, args.bins + 1)
+        bin_edges = data.cell_dimensions[2] * np.linspace(0, 1, args.bins + 1)
         bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
 
         distances_list = []
         valid_count = 0
 
+        # Compute the density of the target element vs. distance from the metal surface.
         if args.target == "H2O":
             # For each frame, compute water COMs with the KD-tree approach.
-            for i in range(n_frames):
-                if step_times[i] < args.skip * 1000:
+            for i in range(len(data.trajectory.atoms.positions)):
+                if data.trajectory.times[i] < args.skip * 1000:
                     continue
                 valid_count += 1
-                frame_positions = positions[i]  # shape: (n_atoms, 3)
-                # Compute water center-of-mass for the frame.
-                water_coms = compute_water_coms(frame_positions, elements)
-                if water_coms.size:
-                    d = np.abs(water_coms[:, 2] - surface_z_all[i])
+
+                if data.trajectory.water_coms.size:
+                    d = np.abs(data.trajectory.water_coms[i, 2] - data.trajectory.surface_zs[i])
                     distances_list.append(d)
         else:
             # Vectorized approach for a target element.
-            target_mask = (elements == args.target)
+            target_mask = (data.trajectory.atoms.elements == args.target)
             if not np.any(target_mask):
                 logging.warning("No atoms with target element '%s' in file %s", args.target, file_path)
                 continue
-            target_z = positions[:, target_mask, 2]  # shape: (n_frames, n_target)
-            for i in range(n_frames):
-                if step_times[i] < args.skip * 1000:
+            target_z = data.trajectory.atoms.positions[:, target_mask, 2]  # shape: (n_frames, n_target)
+            for i in range(len(data.trajectory.atoms.positions)):
+                if data.trajectory.times[i] < args.skip * 1000:
                     continue
                 valid_count += 1
                 # Compute distances for all target atoms in frame i.
-                d = np.abs(target_z[i] - surface_z_all[i])
+                d = np.abs(target_z[i] - data.trajectory.surface_zs[i])
                 distances_list.append(d)
-                
+                            
         if valid_count == 0:
             logging.warning("No valid frames processed for file: %s", file_path)
             continue
@@ -146,41 +76,33 @@ def main():
         counts, _ = np.histogram(all_distances, bins=bin_edges)
 
         # Compute density: convert area from Å² to nm² and bin thickness from Å to nm.
-        area_nm2 = (cell_dimensions[0] * cell_dimensions[1]) / 100.0
-        bin_thickness_nm = (bin_edges[1] - bin_edges[0]) / 10.0
-        bin_volume_nm3 = area_nm2 * bin_thickness_nm
-        density = counts / (valid_count * bin_volume_nm3)
+        density = counts / (data.cell_dimensions[0] * data.cell_dimensions[1] * (bin_edges[1] - bin_edges[0]) * valid_count)
+        color = next(colors)
 
-        color = colors.pop(0)
-
-        plt.plot(bin_centers, density, linestyle='-', label=project_name, color=color)
+        plt.plot(bin_centers, density, linestyle='-', label=data.project_name, color=color)
         plt.fill_between(bin_centers, density, color=color, alpha=0.2)
 
         # Plot initial position in distance from surface in Å of each target atom if -i is given.
         if args.initial_position:
             if args.target == "H2O":
-                initial_positions = compute_water_coms(positions[0], elements)
+                initial_positions = data.trajectory.water_coms[0, 2] - data.trajectory.surface_zs[0]
             else:
-                initial_positions = positions[0][elements == args.target]
-            initial_distances = np.abs(initial_positions[:, 2] - surface_z_all[0])
-            # Plot a big circle at each initial position. The circle is hollow. The y-coordinate is 0.
-            plt.scatter(initial_distances, np.zeros_like(initial_distances), color=color, s=50, marker='o', facecolors='none', linewidths=2)
+                initial_positions = target_z[0] - data.trajectory.surface_zs[0]
+            # Plot the initial positions as hollow circles in the same color as the density plot.
+            plt.plot(initial_positions, np.zeros_like(initial_positions), 'o', color=color, fillstyle='none', linewidth=2)
             
-            
-            
-
     plt.xlabel("Distance to surface (Å)")
     if args.target == "H2O":
         plt.ylabel("Density of H2O (molecules/nm³)")
     else:
         plt.ylabel(f"Density of {args.target} (atoms/nm³)")
     
-    # Set x-axis limits
-    # Start at 0 Å
-    # End at the maximum distance from the surface in all processed files
-    plt.xlim(np.min([np.min(d) for d in distances_list]) - 1, np.max([np.max(d) for d in distances_list]) + 1)
+    # Set x-axis limits: Start at minimal distance (-1 A) and end at the maximum distance (+1 A) from the surface in all processed files
+    min_distance = min([np.min(distances) for distances in distances_list])
+    max_distance = max([np.max(distances) for distances in distances_list])
+    plt.xlim(min_distance - 1, max_distance + 1)
 
-    plt.title(f"Density of {args.target} vs Distance from {metal_type} Surface")
+    plt.title(f"Density of {args.target} vs Distance from {data.metal_type} Surface")
     plt.grid(True, axis='y')
     plt.legend()
     plt.tight_layout()

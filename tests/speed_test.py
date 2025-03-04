@@ -1,6 +1,9 @@
+import sys
+import os
 import time
 import numpy as np
-import h5py
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from read_h5md import Simulation
 
 def load_xyz(xyz_file):
     """
@@ -28,9 +31,8 @@ def load_h5md(h5md_file):
     Load coordinates from an H5MD file.
     Assumes positions are stored under the group "atoms/position".
     """
-    with h5py.File(h5md_file, 'r') as f:
-        positions = f['atoms/position'][:]
-    return positions
+    sim = Simulation(h5md_file)
+    return sim.trajectory.positions
 
 def simple_analysis(positions):
     """
@@ -45,15 +47,17 @@ if __name__ == '__main__':
     
     # Timing the loading and analysis for XYZ file
     t0 = time.time()
-    pos_xyz = load_xyz(xyz_file)
-    com_xyz = simple_analysis(pos_xyz)
+    for _ in range(5):
+        pos_xyz = load_xyz(xyz_file)
+        com_xyz = simple_analysis(pos_xyz)
     t1 = time.time()
     time_xyz = t1 - t0
     
     # Timing the loading and analysis for H5MD file
     t0 = time.time()
-    pos_h5md = load_h5md(h5md_file)
-    com_h5md = simple_analysis(pos_h5md)
+    for _ in range(5):
+        pos_h5md = load_h5md(h5md_file)
+        com_h5md = simple_analysis(pos_h5md)
     t1 = time.time()
     time_h5md = t1 - t0
     

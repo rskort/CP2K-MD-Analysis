@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import argparse
 import numpy as np
@@ -11,11 +12,19 @@ logging.basicConfig(level=logging.INFO,
 def convert_xyz_to_h5md_fast(xyz_file, h5md_file, md_timestep, cell_dimensions,
                              metal_type, lattice_dimensions):
     """
-    Fast conversion from an XYZ file to an H5MD file.
+    Fast conversion from an XYZ file to an H5MD file with a nested structure.
     
     This version reads the entire file into memory and uses vectorized operations
     to parse the coordinate data, eliminating the overhead from per-line processing
     and class-based object creation.
+    
+    The output H5MD file is organized as follows:
+    
+      - simulation: contains simulation-level data such as metal_type,
+        lattice_dimensions, cell_dimensions, and project_name.
+      - frames: contains per-frame data structured into two subgroups:
+          * atoms: with datasets "element" and "position"
+          * step: with datasets "step_index" and "step_time"
     
     Parameters:
         xyz_file (str): Path to the input XYZ file.
@@ -63,8 +72,7 @@ def convert_xyz_to_h5md_fast(xyz_file, h5md_file, md_timestep, cell_dimensions,
         frame_data = lines[pointer:pointer+n_atoms]
         pointer += n_atoms
         
-        # Use numpy.fromstring to quickly extract the three coordinates from each line.
-        # We use count=4 so that we read the element and the three numbers, then slice off the element.
+        # Use numpy conversion to quickly extract the three coordinates from each line.
         frame_array = np.array([np.array(line.split()[1:], dtype=np.float64) for line in frame_data])
         frame_positions.append(frame_array)
         times.append(frame_index * md_timestep)
@@ -74,26 +82,35 @@ def convert_xyz_to_h5md_fast(xyz_file, h5md_file, md_timestep, cell_dimensions,
     times = np.array(times)
     n_frames = positions.shape[0]
     
+    # Derive project name from the input file name.
+    project_name = os.path.splitext(os.path.basename(xyz_file))[0]
+    
     # Create H5MD file structure and write data.
     with h5py.File(h5md_file, 'w') as h5md:
-        h5md.attrs['h5md_version'] = '1.1'
-        h5md.attrs['metal_type'] = metal_type
+        # Create a simulation group for simulation-level data.
+        sim_grp = h5md.create_group("simulation")
+        sim_grp.attrs['metal_type'] = metal_type
         if lattice_dimensions is not None:
-            h5md.attrs['lattice_dimensions'] = np.array(lattice_dimensions)
+            sim_grp.attrs['lattice_dimensions'] = np.array(lattice_dimensions)
         if cell_dimensions:
-            h5md.create_dataset("cell_dimensions", data=np.array(cell_dimensions))
+            sim_grp.create_dataset("cell_dimensions", data=np.array(cell_dimensions))
+        sim_grp.attrs['project_name'] = project_name
         
-        # Write atomic data.
-        atoms_group = h5md.create_group("atoms")
+        # Create a frames group for frame-specific data.
+        frames_grp = h5md.create_group("frames")
+        
+        # Create atoms subgroup within frames.
+        atoms_grp = frames_grp.create_group("atoms")
         dt = h5py.string_dtype(encoding='utf-8')
-        atoms_group.create_dataset("element", data=np.array(first_frame_symbols, dtype=object),
-                                     dtype=dt)
-        atoms_group.create_dataset("position", data=positions, compression="gzip")
+        atoms_grp.create_dataset("element",
+                                 data=np.array(first_frame_symbols, dtype=object),
+                                 dtype=dt)
+        atoms_grp.create_dataset("position", data=positions, compression="gzip")
         
-        # Write time step data.
-        step_group = h5md.create_group("step")
-        step_group.create_dataset("step_index", data=5 * np.arange(n_frames), compression="gzip")
-        step_group.create_dataset("step_time", data=times, compression="gzip")
+        # Create step subgroup within frames.
+        step_grp = frames_grp.create_group("step")
+        step_grp.create_dataset("step_index", data=5 * np.arange(n_frames), compression="gzip")
+        step_grp.create_dataset("step_time", data=times, compression="gzip")
     
     logging.info("Conversion complete. H5MD file saved as: %s", h5md_file)
 
@@ -141,3 +158,4 @@ if __name__ == '__main__':
         output_filepath = os.path.join(output_dir, output_filename)
         convert_xyz_to_h5md_fast(xyz_file, output_filepath, args.timestep, args.cell,
                                  args.metal, args.lattice)
+
