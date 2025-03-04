@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Script to plot the normalized, average radial distribution function (RDF) of a reference element 
-to one or more target elements from one or more h5md files. The RDF is computed on a per-frame basis 
-(after a specified skip time), normalized, and then averaged.
+Script to plot the normalized, average radial distribution function (RDF) 
+of a reference element to one or more target elements from one or more h5md files.
+The RDF is computed on a per-frame basis (after a specified skip time), normalized,
+and then averaged.
 """
 
 import argparse
@@ -31,6 +32,7 @@ def compute_rdf(data, target_symbol, reference_symbol, skip_time, bin_edges):
         
     Returns:
         tuple: (bin_centers, rdf_avg) where rdf_avg is the average normalized RDF.
+               Returns (None, None) if the target or reference is not found or data is missing.
     """
     # Create masks for target and reference atoms.
     target_mask = (data.trajectory.atoms.elements == target_symbol)
@@ -111,12 +113,10 @@ def compute_rdf(data, target_symbol, reference_symbol, skip_time, bin_edges):
 
 def plot_rdfs(rdf_data_list):
     """
-    Plots the RDF curves for a list of (bin_centers, rdf_avg) tuples.
+    Plots the RDF curves for a list of (bin_centers, rdf_avg, label) tuples.
     
     Parameters:
         rdf_data_list (list): List of tuples (bin_centers, rdf_avg, label) for each dataset.
-        target_symbol (str): The chemical symbol for the target atoms.
-        reference_symbol (str): The chemical symbol for the reference atoms.
     """
     color_cycle = cycle(plt.rcParams['axes.prop_cycle'].by_key()['color'])
     plt.figure()
@@ -126,7 +126,7 @@ def plot_rdfs(rdf_data_list):
         plt.plot(bin_centers, rdf_avg, label=label, color=color)
     
     plt.xlabel("Distance (Å)")
-    plt.ylabel("RDF")
+    plt.ylabel("Radial Distribution Function, g(r)")
     plt.legend()
     plt.tight_layout()
     plt.show()
@@ -135,7 +135,7 @@ def plot_rdfs(rdf_data_list):
 def main():
     parser = argparse.ArgumentParser(
         description="Calculate and plot the average radial distribution function (RDF) "
-                    "from h5md simulation files."
+                    "from h5md simulation files for one or more target elements."
     )
     parser.add_argument("filenames", nargs="+", help="Input h5md file(s)")
     parser.add_argument("-s", "--skip", type=float, default=5, 
@@ -144,8 +144,8 @@ def main():
                         help="Number of histogram bins (default: 50)")
     parser.add_argument("-m", "--max_distance", type=float, default=10, 
                         help="Maximum distance in Å (default: 10 Å)")
-    parser.add_argument("-t", "--target", type=str, default="Li", 
-                        help="Target element symbol (default: Li)")
+    parser.add_argument("-t", "--target", type=str, nargs="+", default=["Li"],
+                        help="Target element symbol(s) (default: Li)")
     parser.add_argument("-r", "--reference", type=str, default="O", 
                         help="Reference element symbol (default: O)")
     parser.add_argument("-n", "--normalize", action="store_true", 
@@ -172,21 +172,23 @@ def main():
             logging.error("Failed to load file %s: %s", file_path, e)
             continue
         
-        bin_centers, rdf_avg = compute_rdf(sim_data, args.target, args.reference, args.skip, bin_edges)
-        if bin_centers is None or rdf_avg is None:
-            logging.warning("Skipping file %s due to missing data.", file_path)
-            continue
-        
-        # Normalize RDF if requested.
-        if args.normalize:
-            total = rdf_avg.sum()
-            if total > 0:
-                rdf_avg = rdf_avg / total
-            else:
-                logging.warning("Sum of RDF is zero in file %s; cannot normalize.", file_path)
-        
-        label = f"{args.target} - {args.reference} ({sim_data.project_name})"
-        rdf_data_list.append((bin_centers, rdf_avg, label))
+        # Process each target element separately.
+        for target in args.target:
+            bin_centers, rdf_avg = compute_rdf(sim_data, target, args.reference, args.skip, bin_edges)
+            if bin_centers is None or rdf_avg is None:
+                logging.warning("Skipping target %s in file %s due to missing data.", target, file_path)
+                continue
+            
+            # Normalize RDF if requested.
+            if args.normalize:
+                total = rdf_avg.sum()
+                if total > 0:
+                    rdf_avg = rdf_avg / total
+                else:
+                    logging.warning("Sum of RDF is zero for target %s in file %s; cannot normalize.", target, file_path)
+            
+            label = f"{target} - {args.reference} ({sim_data.project_name})"
+            rdf_data_list.append((bin_centers, rdf_avg, label))
     
     if rdf_data_list:
         plot_rdfs(rdf_data_list)

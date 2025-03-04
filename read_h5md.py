@@ -13,8 +13,8 @@ class Simulation:
         if not os.path.isfile(h5md_file_path):
             raise FileNotFoundError(f"H5MD file '{h5md_file_path}' does not exist.")
         with h5py.File(h5md_file_path, 'r') as f:
-            # Load time-dependent trajectory data.
-            self.trajectory = Trajectory(f["frames"], simulation=self)
+            # Load time-dependent trajectory data from the 'trajectory' group.
+            self.trajectory = Trajectory(f["trajectory"], simulation=self)
 
             # Read attributes from the simulation group.
             self.metal_type = f["simulation"].attrs.get("metal_type")
@@ -23,13 +23,14 @@ class Simulation:
                 self.lattice_dimensions = tuple(self.lattice_dimensions)
             self.cell_dimensions = f["simulation"]["cell_dimensions"][()] if "cell_dimensions" in f["simulation"] else None
             self.project_name = f["simulation"].attrs.get("project_name")
+            self.ion_types = f["simulation"].attrs.get("ion_types")
 
 class Trajectory:
-    """Class to store time-dependent simulation data, including atomic and step information."""
-    def __init__(self, frames_group, simulation):
+    """Class to store time-dependent simulation data, including atomic information and times."""
+    def __init__(self, trajectory_group, simulation):
         self.simulation = simulation
-        self.atoms = Atoms(frames_group["atoms"])
-        self.times = frames_group["step"]["step_time"][()]
+        self.atoms = Atoms(trajectory_group["atoms"])
+        self.times = trajectory_group["times"][()]
     
     @property
     def positions(self):
@@ -48,7 +49,7 @@ class Trajectory:
         n_frames = self.positions.shape[0]
         electrode_layers = self.simulation.lattice_dimensions[2] if self.simulation.lattice_dimensions is not None else 1
         metal_mask = (self.atoms.elements == self.simulation.metal_type)
-        # If no metal atoms are present, use zero.
+        # If no metal atoms are present, use zeros.
         if not np.any(metal_mask):
             return np.zeros(n_frames)
         metal_z = self.positions[:, metal_mask, 2]  # shape: (n_frames, n_metal)
@@ -87,21 +88,19 @@ class Trajectory:
             com = (o_mass * o_position + h_mass * h_positions.sum(axis=0)) / total_mass
             water_coms[i] = com
         self.water_coms = water_coms
-        return water_coms
+        return self.water_coms
     
 
 class Atoms:
     """Class to store atomic data within simulation frames."""
     def __init__(self, atoms_group):
         # Load the element symbols.
-        self.elements = atoms_group["element"][()]
+        self.elements = atoms_group["elements"][()]
         if self.elements.size > 0 and isinstance(self.elements[0], bytes):
             # Decode byte strings to UTF-8.
             self.elements = np.array([el.decode('utf-8') for el in self.elements])
         # Load positions: shape (n_frames, n_atoms, 3)
-        self.positions = atoms_group["position"][()]
-
-
+        self.positions = atoms_group["positions"][()]
 
 if __name__ == '__main__':
     # Example usage:
@@ -114,12 +113,13 @@ if __name__ == '__main__':
     print("Metal Type:", data.metal_type)
     print("Lattice Dimensions:", data.lattice_dimensions)
     print("Cell Dimensions:", data.cell_dimensions)
+    print("Ion types:", data.ion_types)
     
     # Access trajectory-level data.
     print("\nTrajectory Data:\n----------------")
     print("Times:", data.trajectory.times)
     print("Element Symbols:", data.trajectory.atoms.elements)
-    print("Positions (first atom):", data.trajectory.positions[0, 0])
+    print("Positions (first atom):", data.trajectory.atoms.positions[0, 0])
     print("Surface Z values:", data.trajectory.surface_zs)
     
     # Access positions using the property for convenience.

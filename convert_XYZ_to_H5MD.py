@@ -10,21 +10,21 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 def convert_xyz_to_h5md_fast(xyz_file, h5md_file, md_timestep, cell_dimensions,
-                             metal_type, lattice_dimensions):
+                             metal_type, lattice_dimensions, ions):
     """
-    Fast conversion from an XYZ file to an H5MD file with a nested structure.
+    Fast conversion from an XYZ file to an H5MD file with the following hierarchy:
     
-    This version reads the entire file into memory and uses vectorized operations
-    to parse the coordinate data, eliminating the overhead from per-line processing
-    and class-based object creation.
-    
-    The output H5MD file is organized as follows:
-    
-      - simulation: contains simulation-level data such as metal_type,
-        lattice_dimensions, cell_dimensions, and project_name.
-      - frames: contains per-frame data structured into two subgroups:
-          * atoms: with datasets "element" and "position"
-          * step: with datasets "step_index" and "step_time"
+    simulation (group)
+        metal_type (attribute)
+        lattice_dimensions (attribute)
+        cell_dimensions (dataset)
+        project_name (attribute)
+        (optional) ions (dataset)
+    trajectory (group)
+        atoms (group)
+            elements (dataset)
+            positions (dataset)
+        times (dataset)
     
     Parameters:
         xyz_file (str): Path to the input XYZ file.
@@ -33,6 +33,7 @@ def convert_xyz_to_h5md_fast(xyz_file, h5md_file, md_timestep, cell_dimensions,
         cell_dimensions (tuple or None): Cell dimensions (Lx, Ly, Lz) if provided.
         metal_type (str): Metal type (e.g. "Pt" or "Au").
         lattice_dimensions (tuple or None): Lattice dimensions if provided.
+        ions (list or None): List of ion types present in the electrolyte (default: None).
     """
     logging.info("Starting conversion of %s", xyz_file)
     
@@ -80,14 +81,13 @@ def convert_xyz_to_h5md_fast(xyz_file, h5md_file, md_timestep, cell_dimensions,
 
     positions = np.array(frame_positions)  # Shape: (n_frames, n_atoms, 3)
     times = np.array(times)
-    n_frames = positions.shape[0]
     
     # Derive project name from the input file name.
     project_name = os.path.splitext(os.path.basename(xyz_file))[0]
     
-    # Create H5MD file structure and write data.
+    # Create H5MD file structure with the new hierarchy.
     with h5py.File(h5md_file, 'w') as h5md:
-        # Create a simulation group for simulation-level data.
+        # Simulation group for metadata.
         sim_grp = h5md.create_group("simulation")
         sim_grp.attrs['metal_type'] = metal_type
         if lattice_dimensions is not None:
@@ -95,22 +95,22 @@ def convert_xyz_to_h5md_fast(xyz_file, h5md_file, md_timestep, cell_dimensions,
         if cell_dimensions:
             sim_grp.create_dataset("cell_dimensions", data=np.array(cell_dimensions))
         sim_grp.attrs['project_name'] = project_name
+        # Include ions if provided.
+        if ions is not None and len(ions) > 0:
+            dt = h5py.string_dtype(encoding='utf-8')
+            sim_grp.create_dataset("ions", data=np.array(ions, dtype=object), dtype=dt)
         
-        # Create a frames group for frame-specific data.
-        frames_grp = h5md.create_group("frames")
-        
-        # Create atoms subgroup within frames.
-        atoms_grp = frames_grp.create_group("atoms")
+        # Trajectory group for time-dependent data.
+        traj_grp = h5md.create_group("trajectory")
+        # Atoms subgroup.
+        atoms_grp = traj_grp.create_group("atoms")
         dt = h5py.string_dtype(encoding='utf-8')
-        atoms_grp.create_dataset("element",
+        atoms_grp.create_dataset("elements",
                                  data=np.array(first_frame_symbols, dtype=object),
                                  dtype=dt)
-        atoms_grp.create_dataset("position", data=positions, compression="gzip")
-        
-        # Create step subgroup within frames.
-        step_grp = frames_grp.create_group("step")
-        step_grp.create_dataset("step_index", data=5 * np.arange(n_frames), compression="gzip")
-        step_grp.create_dataset("step_time", data=times, compression="gzip")
+        atoms_grp.create_dataset("positions", data=positions, compression="gzip")
+        # Times dataset.
+        traj_grp.create_dataset("times", data=times, compression="gzip")
     
     logging.info("Conversion complete. H5MD file saved as: %s", h5md_file)
 
@@ -125,16 +125,18 @@ if __name__ == '__main__':
                         help="MD timestep between frames in femtoseconds (default: 2.5)")
     parser.add_argument('-c', '--cell', type=float, nargs=3, default=None,
                         help="Cell dimensions: three floats for Lx, Ly, and Lz (default: None)")
-    parser.add_argument('-i', '--input', type=str, default="trajectories_xyz",
+    parser.add_argument('-f', '--files', type=str, default="trajectories_xyz",
                         help="Path to the input XYZ file or directory (default: trajectories_xyz)")
     parser.add_argument('-m', '--metal', type=str, default="Pt",
                         help="Metal type of the electrode (e.g. Pt or Au; default: Pt)")
     parser.add_argument('-l', '--lattice', type=int, nargs=3, default=None,
                         help="Lattice dimensions: three integers for X, Y, and Z (layers)")
+    parser.add_argument('-i', '--ions', type=str, nargs='*', default=None,
+                        help="Ion types present in electrolyte (default: None)")
     args = parser.parse_args()
     
     # Determine input files.
-    input_path = args.input
+    input_path = args.files
     xyz_files = []
     if os.path.isfile(input_path):
         xyz_files.append(input_path)
@@ -157,5 +159,4 @@ if __name__ == '__main__':
         output_filename = base_name + ".h5md"
         output_filepath = os.path.join(output_dir, output_filename)
         convert_xyz_to_h5md_fast(xyz_file, output_filepath, args.timestep, args.cell,
-                                 args.metal, args.lattice)
-
+                                 args.metal, args.lattice, args.ions)
