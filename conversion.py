@@ -40,8 +40,8 @@ if __name__ == '__main__':
                   -0.11, -0.80, -1.19, -1.95, 
                   0, 0]
     """
-    sim_ids = ["Li2_H"]
-    potentials = [-0.61]
+    sim_ids = []
+    potentials = []
 
 
     for i in range(len(sim_ids)):
@@ -52,3 +52,9 @@ if __name__ == '__main__':
                           electrode_potential=potentials[i]
                          )
  
+    convert_xyz_to_pickle(xyz_file="data/xyz_files/example.xyz", 
+                          md_timestep=md_timestep, 
+                          cell_dims=cell_dims, 
+                          lattice_dims=lattice_dims, 
+                          electrode_potential=-0.12
+                         )
