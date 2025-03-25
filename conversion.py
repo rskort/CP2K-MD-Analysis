@@ -1,9 +1,9 @@
 from classes import Simulation
 import os
 
-def convert_xyz_to_pickle(xyz_file, md_timestep, cell_dims, lattice_dims, electrode_potential):
+def convert_xyz_to_pickle(xyz_file, xyz_timestep, cell_dims, lattice_dims, electrode_potential):
     """Convert an XYZ file to a Simulation object and save it as a pickle file."""
-    sim = Simulation(xyz_file, md_timestep, cell_dims, lattice_dims, electrode_potential)
+    sim = Simulation(xyz_file, xyz_timestep, cell_dims, lattice_dims, electrode_potential)
     # Save the Simulation object as a pickle file with the same name as the input XYZ file.
     output_file = os.path.splitext(xyz_file)[0] + ".pkl"
     output_path = os.path.join("data", "simulations", os.path.basename(output_file))
@@ -12,7 +12,7 @@ def convert_xyz_to_pickle(xyz_file, md_timestep, cell_dims, lattice_dims, electr
     sim.save(output_path)
 
 if __name__ == '__main__':
-    md_timestep = 2.5 # fs
+    xyz_timestep = 2.5 # fs
     cell_dims = (14.25, 14.81, 54.48) # Å
     lattice_dims = (5, 6, 4)
     
@@ -46,14 +46,14 @@ if __name__ == '__main__':
 
     for i in range(len(sim_ids)):
         convert_xyz_to_pickle(xyz_file=f"data/xyz_files/Pt111_{sim_ids[i]}.xyz",
-                          md_timestep=md_timestep,
+                          xyz_timestep=xyz_timestep,
                           cell_dims=cell_dims,
                           lattice_dims=lattice_dims,
                           electrode_potential=potentials[i]
                          )
  
     convert_xyz_to_pickle(xyz_file="data/xyz_files/example.xyz", 
-                          md_timestep=md_timestep, 
+                          xyz_timestep=xyz_timestep, 
                           cell_dims=cell_dims, 
                           lattice_dims=lattice_dims, 
                           electrode_potential=-0.12
