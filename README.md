@@ -32,6 +32,15 @@
 
 ---
 
+## Assumptions and Limitations
+
+- **Surface Conditions:** The analysis assumes that the simulated systems are either bare surfaces or have hydrogen adsorption. Systems exhibiting bond breaking or dynamic adsorption/desorption events are not supported.
+- **Input File Format:** The XYZ files must follow the expected format (i.e., first line number of atoms, second line comment, followed by atom labels and coordinates). The ordering of the atoms is assumed to stay unchanged for each trajectory step.
+- **Simulation Parameters:** Parameters such as cell dimensions and lattice dimensions must be correctly provided to ensure accurate processing.
+- **Time Evolution:** It is assumed that the simulation does not exhibit abrupt changes in atom classification (e.g., due to chemical reactions) during the trajectory. 
+
+---
+
 ## Directory Structure
 
 ```
@@ -67,13 +76,10 @@ pip install numpy matplotlib
 
 ### Data Conversion
 
-To convert an XYZ trajectory file into a pickle file, use the script in `conversion.py`. For example, run:
-
-```bash
-python conversion.py
-```
-
-This script initializes a `Simulation` object using parameters such as timestep, cell dimensions, and lattice dimensions, then saves the object as a pickle file in the `data/simulations` directory. You can also uncomment and modify simulation identifiers and electrode potential lists as needed.
+The XYZ files that should be used for analysis should be placed into \data\xyz_files\.
+To convert an XYZ trajectory file into a pickle file, use the script `conversion.py`.
+When you open `conversion.py`, you can see the `convert_xyz_to_pickle(xyz_file, xyz_timestep, cell_dims, lattice_dims, electrode_potential)` function.
+This function initializes a `Simulation` object using parameters such as timestep, cell dimensions, lattice dimensions, and electrode potential, and then saves the object as a pickle file in the `data/simulations` directory. You can also uncomment and modify simulation identifiers and electrode potential lists as needed.
 
 ### Analysis and Plotting
 
@@ -144,7 +150,8 @@ This project is provided "as is" without warranty of any kind. Please refer to t
 
 ---
 
-For further questions or contributions, please open an issue or submit a pull request on the project's repository.
+For any further questions or contributions, please open an issue or submit a pull request on the project's repository.
+Or you can contact me at r.s.kort@umail.leidenuniv.nl.
 
 Happy Analyzing!
 
